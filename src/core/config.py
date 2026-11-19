@@ -99,12 +99,23 @@ except FileNotFoundError:
 # Blue Team — fixed OpenRouter Liquid
 # ---------------------------------------------------------------------------
 
+# Tuỳ chọn: gọi CÙNG model LFM-3 1.7B trực tiếp qua Liquid AI API
+# (OpenAI-compatible) thay vì OpenRouter. Bật bằng BLUE_PROVIDER=liquid
+# + LIQUID_API_KEY trong .env. Không đặt → mặc định OpenRouter như starter.
+PROVIDER_LIQUID = "liquid"
+LIQUID_BASE_URL = "https://api.liquid.ai/openai/v1"
+LIQUID_BLUE_MODEL = "lfm3-1.7b"  # = liquid/lfm-3-1.7b trên OpenRouter
+
+
 def get_blue_provider() -> str:
-    return BLUE_PROVIDER
+    p = os.environ.get("BLUE_PROVIDER", "").strip().lower()
+    return PROVIDER_LIQUID if p == PROVIDER_LIQUID else BLUE_PROVIDER
 
 
 def get_blue_model() -> str:
-    # Hard-locked; env cannot override for the graded Blue Team path.
+    # Model LFM-3 1.7B cố định; chỉ khác tên id theo provider.
+    if get_blue_provider() == PROVIDER_LIQUID:
+        return LIQUID_BLUE_MODEL
     return BLUE_MODEL
 
 
@@ -112,8 +123,26 @@ def get_openrouter_api_key() -> str:
     return os.environ.get("OPENROUTER_API_KEY", "").strip()
 
 
+def get_liquid_api_key() -> str:
+    return os.environ.get("LIQUID_API_KEY", "").strip()
+
+
+def get_blue_api_key() -> str:
+    if get_blue_provider() == PROVIDER_LIQUID:
+        return get_liquid_api_key()
+    return get_openrouter_api_key()
+
+
 def blue_client_kwargs() -> dict:
-    """OpenAI SDK kwargs pointing at OpenRouter (Blue Team only)."""
+    """OpenAI SDK kwargs cho Blue Team (OpenRouter mặc định, hoặc Liquid AI)."""
+    if get_blue_provider() == PROVIDER_LIQUID:
+        return {
+            "api_key": get_liquid_api_key() or None,
+            "base_url": (
+                os.environ.get("LIQUID_BASE_URL", LIQUID_BASE_URL).strip()
+                or LIQUID_BASE_URL
+            ),
+        }
     return {
         "api_key": get_openrouter_api_key() or None,
         "base_url": (
@@ -235,8 +264,13 @@ def is_harder_model() -> bool:
 
 
 def setup_api_key():
-    """Ensure keys for Blue (OpenRouter) + Red / Red Advance (OpenAI or Gemini)."""
-    if not get_openrouter_api_key():
+    """Ensure keys for Blue (OpenRouter / Liquid) + Red / Red Advance (OpenAI or Gemini)."""
+    if get_blue_provider() == PROVIDER_LIQUID:
+        if not get_liquid_api_key():
+            os.environ["LIQUID_API_KEY"] = input(
+                "Enter Liquid AI API Key (Blue): "
+            ).strip()
+    elif not get_openrouter_api_key():
         os.environ["OPENROUTER_API_KEY"] = input(
             "Enter OpenRouter API Key (Blue): "
         ).strip()

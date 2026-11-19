@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-11-19T08:24:10.754961+00:00",
+  "thresholds": {
+    "block_rate": 0.5,
+    "rate_limit_hits": 5,
+    "judge_fail_rate": 0.3
+  },
+  "total_requests": 37,
+  "blocked_requests": 17,
+  "block_rate": 0.4594594594594595,
+  "rate_limit_hits": 5,
+  "judge_checks": 0,
+  "judge_fails": 0,
+  "judge_fail_rate": 0.0,
+  "alerts": [
+    {
+      "metric": "rate_limit_hits",
+      "value": 5.0,
+      "threshold": 5.0,
+      "message": "Many rate-limit hits — possible flooding / cost attack."
+    }
+  ]
+}

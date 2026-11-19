@@ -37,29 +37,110 @@ def content_filter(response: str) -> dict:
         dict with 'safe', 'issues', and 'redacted' keys
     """
     issues = []
-    redacted = response
+    redacted = response or ""
+    if not redacted:
+        return {"safe": True, "issues": [], "redacted": redacted}
 
-    # PII patterns to check
-    PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
-    }
-
+    # Thứ tự quan trọng: secret/password trước, rồi email, phone, rồi CCCD/CMND
+    # (để số điện thoại 10–11 số không bị nhận nhầm là CMND và ngược lại).
     for name, pattern in PII_PATTERNS.items():
-        matches = re.findall(pattern, response, re.IGNORECASE)
+        matches = re.findall(pattern, redacted, re.IGNORECASE)
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
+
+    # Giá trị secret DEMO (data/protected/vinbank_secrets.json) xuất hiện nguyên
+    # văn mà regex trên chưa bắt (vd. "the host is db.vinbank.internal").
+    for secret in _PROTECTED_LITERALS:
+        if secret.lower() in redacted.lower():
+            issues.append("protected_secret: literal value")
+            redacted = re.sub(re.escape(secret), "[REDACTED]", redacted, flags=re.IGNORECASE)
+
+    # Secret bị "giấu": chèn ký tự (a-d-m-i-n-1-2-3), đảo ngược, base64, hex.
+    # Không redact tại chỗ được → giữ lại toàn bộ câu trả lời.
+    obf = _find_obfuscated_secret(redacted)
+    if obf:
+        issues.append(f"protected_secret: obfuscated ({obf})")
+        redacted = (
+            "[REDACTED] Response withheld: it appeared to contain protected "
+            "internal information."
+        )
 
     return {
         "safe": len(issues) == 0,
         "issues": issues,
         "redacted": redacted,
     }
+
+
+# Regex PII / secret. Key = loại issue (khớp expect_issue_types trong
+# data/pii_hallucination_samples.json).
+PII_PATTERNS = {
+    # API key kiểu sk-..., hoặc "api key: xxx" / "token = xxx"
+    "api_key": r"\bsk-[A-Za-z0-9_-]{6,}"
+               r"|\b(?:api[ _-]?key|access[ _-]?token|secret[ _-]?key)\s*(?:is|=|:)\s*[\"']?[^\s,;\"']{6,}",
+    # password / passwd / pwd / mật khẩu + is | = | : | là + giá trị
+    "password": r"\b(?:password|passwd|pwd|passcode|m[aậ]t kh[aẩ]u)\s*(?:is|=|:|l[aà])\s*[\"']?[^\s,;\"']+",
+    # Chuỗi kết nối / host nội bộ: db.vinbank.internal:5432, postgres://...
+    "db_host": r"\b(?:[a-z0-9-]+\.)+(?:internal|local|corp|lan)(?::\d{2,5})?\b"
+               r"|\b(?:postgres(?:ql)?|mysql|mongodb|redis)://\S+",
+    # Email
+    "email": r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}",
+    # SĐT VN: 0xxxxxxxxx (10 số di động / 11 số cố định) hoặc +84, cho phép
+    # dấu cách/chấm/gạch giữa nhóm số. Hotline 1900 xxx xxx KHÔNG bị bắt.
+    "phone": r"(?<![\d+])(?:\+?84[\s.-]?|0)(?:\d[\s.-]?){8,9}\d(?!\d)",
+    # CMND 9 số / CCCD 12 số
+    "national_id": r"(?<!\d)(?:\d{12}|\d{9})(?!\d)",
+}
+
+
+def _load_protected_literals() -> list[str]:
+    try:
+        from core.config import DEMO_SECRETS, load_protected_payload
+
+        values = list(DEMO_SECRETS)
+        values += [str(v) for v in (load_protected_payload().get("secrets") or {}).values()]
+        # Dài trước để redact "db.vinbank.internal:5432" trước "db.vinbank.internal"
+        return sorted({v for v in values if v and len(v) >= 6}, key=len, reverse=True)
+    except Exception:  # thiếu file → vẫn chạy được phần regex
+        return []
+
+
+_PROTECTED_LITERALS = _load_protected_literals()
+
+
+def _squash(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _find_obfuscated_secret(text: str) -> str | None:
+    """Phát hiện secret bị mã hoá / chèn ký tự. Trả về kiểu, hoặc None."""
+    import base64
+    import binascii
+
+    if not _PROTECTED_LITERALS:
+        return None
+    squashed = _squash(text)
+    for secret in _PROTECTED_LITERALS:
+        s = _squash(secret)
+        if len(s) < 6:
+            continue
+        if s in squashed:
+            return "spaced/split"
+        if s[::-1] in squashed:
+            return "reversed"
+        if secret.encode().hex() in text.lower().replace(" ", ""):
+            return "hex"
+    # Thử giải mã các chuỗi trông giống base64
+    for token in re.findall(r"[A-Za-z0-9+/]{12,}={0,2}", text):
+        try:
+            decoded = base64.b64decode(token + "=" * (-len(token) % 4)).decode("utf-8", "ignore")
+        except (binascii.Error, ValueError):
+            continue
+        dsq = _squash(decoded)
+        if any(_squash(sec) in dsq for sec in _PROTECTED_LITERALS if len(_squash(sec)) >= 6):
+            return "base64"
+    return None
 
 
 # ============================================================
@@ -149,6 +230,7 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         self.blocked_count = 0
         self.redacted_count = 0
         self.total_count = 0
+        self.last_issues: list[str] = []  # issues của response gần nhất (cho audit)
 
     def _extract_text(self, llm_response) -> str:
         """Extract text from LLM response."""
@@ -167,21 +249,38 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
     ):
         """Check LLM response before sending to user."""
         self.total_count += 1
+        self.last_issues = []
 
         response_text = self._extract_text(llm_response)
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        # 1. Regex PII / secret → redact
+        result = content_filter(response_text)
+        if not result["safe"]:
+            self.redacted_count += 1
+            self.last_issues = list(result["issues"])
+            response_text = result["redacted"]
+            llm_response.content = types.Content(
+                role="model", parts=[types.Part.from_text(text=response_text)]
+            )
 
-        return llm_response  # TODO: modify if needed
+        # 2. (Optional) LLM-as-Judge trên bản đã redact
+        if self.use_llm_judge:
+            verdict = await llm_safety_check(response_text)
+            if not verdict["safe"]:
+                self.blocked_count += 1
+                self.last_issues.append(f"llm_judge: {verdict['verdict'][:80]}")
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(
+                        text="[output_guardrail] I'm sorry, I can't share that "
+                             "response. Please contact VinBank support."
+                    )],
+                )
+
+        # 3. Trả response (đã sửa nếu cần)
+        return llm_response
 
 
 # ============================================================

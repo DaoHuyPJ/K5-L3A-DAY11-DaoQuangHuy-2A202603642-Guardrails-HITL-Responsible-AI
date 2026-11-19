@@ -1,5 +1,44 @@
 # Day 11 — Controlled Agent Security (2026)
 
+## Bài nộp
+
+| | |
+|---|---|
+| **Họ tên** | Đào Quang Huy |
+| **MSSV** | 2A202603642 |
+| **Lớp** | K5 · L3A · Day 11 |
+
+### Cách chạy
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env      # điền key (xem bên dưới)
+
+python src/main.py --part 2      # CP2 — guardrails (in terminal)
+python src/main.py --part 3      # CP3 — sinh outputs/results.json, audit_log.json, metrics.json
+python src/main.py --part 4      # CP4 — sinh outputs/attack_results.json (+ unsafe/guards_attack_result.json)
+
+pytest tests/smoke -q
+pytest tests/public -q
+python scripts/grade.py --submission-dir . --out outputs/grade_report.json
+```
+
+**Provider dùng khi chạy bài này** (khai báo trong `.env`, không commit):
+
+- **Blue:** model LFM-3 1.7B gọi trực tiếp qua Liquid AI API (`BLUE_PROVIDER=liquid`, `LIQUID_API_KEY`, model id `lfm3-1.7b`) — cùng model với `liquid/lfm-3-1.7b:free` trên OpenRouter. Không đặt `BLUE_PROVIDER` → code dùng OpenRouter như starter (`OPENROUTER_API_KEY`).
+- **Red / Red Advance:** `RED_TEAM_PROVIDER=gemini`, `GEMINI_MODEL=gemini-3.5-flash` (model lab mặc định).
+- Tuỳ chọn: `ATTACK_DELAY_SECONDS=20` để nghỉ giữa các prompt CP4, tránh rate limit Gemini free tier.
+
+### Kết quả (từ `outputs/lab_report.md`, tự sinh)
+
+- Safe queries bị chặn: **0/6** · Attack queries bị chặn: **8/10** · Rate limit: **5/15** bị chặn · Egress: **10/10** đúng
+- Red leak: **4/5** · Red Advance leak: **0/5** (chặn bởi NeMo input rail / fail-closed)
+- `pytest tests/smoke` 39 passed · `pytest tests/public` 10 passed
+
+---
+
 > 👤 **Hình thức:** bài tập **cá nhân** (1 người / 1 MSSV).  
 > 🎯 **Mục tiêu:** đóng vai **Blue Team** để học cách xây Guardrails phòng thủ, rồi đóng vai **Red Team** để tấn công agent **Red** hoặc **Red Advance**.  
 > ✅ Làm theo **Checkpoint 1 → 5** trong [`CHECKPOINTS.md`](CHECKPOINTS.md) · nộp theo [`SUBMISSION.md`](SUBMISSION.md).
